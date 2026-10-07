@@ -43,7 +43,17 @@ async function main() {
       if (flags.scope === 'code') scope = CODE_ROOTS.length ? CODE_ROOTS : { exclude: ['docs'] };
       else if (flags.scope === 'docs') scope = ['docs'];
     }
-    const results = await searchQuery(query, flags.k || 8, scope);
+    let results;
+    try {
+      results = await searchQuery(query, flags.k || 8, scope);
+    } catch (err) {
+      if (err?.code === 'OLLAMA_UNAVAILABLE') {
+        console.error('Ollama unreachable — start it (`ollama serve` or the desktop app) and retry.');
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
     if (results.length === 0) {
       console.log('No results.');
       return;

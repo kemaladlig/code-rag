@@ -115,6 +115,11 @@ function snippet(text) {
   return lines.length > SNIPPET_LINES ? `${head}\n    … (${lines.length - SNIPPET_LINES} more lines)` : head;
 }
 
+const OLLAMA_DOWN_TEXT =
+  'code-rag: Ollama is not reachable, so semantic search is unavailable right now. ' +
+  'Start Ollama (`ollama serve` or the desktop app) and retry, or fall back to grep/read for now.';
+const isOllamaDown = (err) => err?.code === 'OLLAMA_UNAVAILABLE';
+
 async function callTool(name, args) {
   if (name === 'search_code') {
     const query = String(args.query ?? '').trim();
@@ -129,7 +134,13 @@ async function callTool(name, args) {
     }
     const cold = status().chunks === 0;
     ensureIndex(); // fire-and-forget: never blocks this call
-    const results = await searchQuery(query, k, scope);
+    let results;
+    try {
+      results = await searchQuery(query, k, scope);
+    } catch (err) {
+      if (isOllamaDown(err)) return { isError: true, content: [{ type: 'text', text: OLLAMA_DOWN_TEXT }] };
+      throw err;
+    }
     const note = cold
       ? '\n\n(code-rag: no index for this project yet — building it in the background. ' +
         'These results may be incomplete; use normal search/read meanwhile and retry shortly.)'
@@ -161,7 +172,13 @@ async function callTool(name, args) {
 
   if (name === 'reindex') {
     if (isBuilding()) await ensureIndex(); // let any background build finish first
-    const report = await build({ full: !!args.full, onProgress: () => {} });
+    let report;
+    try {
+      report = await build({ full: !!args.full, onProgress: () => {} });
+    } catch (err) {
+      if (isOllamaDown(err)) return { isError: true, content: [{ type: 'text', text: OLLAMA_DOWN_TEXT }] };
+      throw err;
+    }
     const text =
       `indexed=${report.indexed} skipped=${report.skipped} removed=${report.removed} ` +
       `chunks=${report.chunks} files=${report.totalFiles}`;

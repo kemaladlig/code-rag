@@ -53,6 +53,10 @@ ollama pull embeddinggemma
 No `npm install` needed. The Ollama server (desktop app or `ollama serve`) must
 be running for indexing and search. Requires Node 22+ (`node:sqlite`).
 
+If Ollama is unreachable, `search_code` / `reindex` return a clear "Ollama is not
+reachable" note (marked as an error) instead of a raw failure; fall back to
+grep/read until it is back — the existing index stays valid.
+
 ### Global install (all projects)
 
 The tool lives outside any project at
