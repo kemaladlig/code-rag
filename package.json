@@ -1,0 +1,14 @@
+{
+  "name": "code-rag",
+  "private": true,
+  "type": "module",
+  "description": "Local semantic code search (EmbeddingGemma v1 via Ollama)",
+  "scripts": {
+    "index": "node src/cli.js index",
+    "search": "node src/cli.js search",
+    "status": "node src/cli.js status",
+    "mcp": "node src/mcp.js",
+    "eval": "node eval.mjs",
+    "eval:code": "node eval-code.mjs"
+  }
+}

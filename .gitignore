@@ -1,0 +1,5 @@
+node_modules/
+.cache/
+index*.db
+index*.db-shm
+index*.db-wal
