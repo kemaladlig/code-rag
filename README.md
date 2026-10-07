@@ -39,6 +39,9 @@ recall. v2 bought nothing for ~10× the cost, so the ONNX path was removed.
 Docs are still indexed; `search_code` just defaults to code scope because design
 docs otherwise outrank code semantically.
 
+_This table is a pilot snapshot: the eval set and the working tree both move, so
+absolute recall drifts. Rerun `eval.mjs` / `eval-code.mjs` for current numbers._
+
 ## Setup
 
 Install [Ollama](https://ollama.com), then:
