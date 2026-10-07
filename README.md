@@ -1,8 +1,9 @@
 # Code RAG (local semantic code search)
 
-Local semantic search over a repository, exposed to OpenCode through a small
-MCP server so an agent can locate code by meaning before reading files. Runs
-entirely in Node with no npm dependencies; embeddings come from Ollama.
+Local semantic search over a repository, exposed to any MCP client (OpenCode,
+VS Code, Cursor, Windsurf, Claude Code, Codex, Gemini CLI/Antigravity) through a
+small MCP server so an agent can locate code by meaning before reading files.
+Runs entirely in Node with no npm dependencies; embeddings come from Ollama.
 
 The same tool install serves **every project**: it derives the repo root from
 MCP roots / the working directory, keeps one self-ignored index per repo, and is
