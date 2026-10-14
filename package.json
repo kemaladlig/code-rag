@@ -36,6 +36,7 @@
     "search": "node src/cli.js search",
     "status": "node src/cli.js status",
     "mcp": "node src/mcp.js",
+    "test": "node --test",
     "eval": "node evals/run.mjs",
     "eval:code": "node evals/run.mjs --code"
   }
