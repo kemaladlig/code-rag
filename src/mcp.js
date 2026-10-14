@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Minimal MCP (Model Context Protocol) server over stdio, JSON-RPC 2.0,
 // no dependencies. Exposes semantic code search to OpenCode and other MCP
 // clients. The protocol for three read-only tools is small enough that a
@@ -9,7 +10,14 @@
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
-import { CODE_ROOTS, DB_PATH, INDEX_ROOTS, OLLAMA_MODEL, setRepoRoot } from './config.js';
+import {
+  CODE_ROOTS,
+  DB_PATH,
+  EMBED_BACKEND,
+  EMBED_MODEL,
+  INDEX_ROOTS,
+  setRepoRoot,
+} from './config.js';
 import { build, ensureIndex, isBuilding, searchQuery, status } from './indexer.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -115,10 +123,27 @@ function snippet(text) {
   return lines.length > SNIPPET_LINES ? `${head}\n    … (${lines.length - SNIPPET_LINES} more lines)` : head;
 }
 
-const OLLAMA_DOWN_TEXT =
-  'code-rag: Ollama is not reachable, so semantic search is unavailable right now. ' +
-  'Start Ollama (`ollama serve` or the desktop app) and retry, or fall back to grep/read for now.';
-const isOllamaDown = (err) => err?.code === 'OLLAMA_UNAVAILABLE';
+const EMBED_DOWN_TEXT =
+  'code-rag: the embedding backend is not reachable, so semantic search is unavailable ' +
+  `right now (backend "${EMBED_BACKEND}"). Start it and retry, or fall back to grep/read for now.`;
+// EMBED_UNREACHABLE = the server is down; EMBED_HTTP = it answered with an error
+// (e.g. the model cannot be loaded). The second case carries the server's own
+// message, which names the real cause, so surface that instead of the generic
+// "start the backend" hint.
+const isEmbedDown = (err) => err?.code === 'EMBED_UNREACHABLE' || err?.code === 'EMBED_HTTP';
+const embedDownText = (err) =>
+  err?.code === 'EMBED_HTTP'
+    ? `code-rag: semantic search failed — the embedding model could not be used.\n${err.message}`
+    : EMBED_DOWN_TEXT;
+
+// The configured embedding model changed since this index was built. Vectors
+// from two models are not comparable, so we refuse the query, kick a full
+// rebuild, and ask the caller to retry rather than return meaningless scores.
+const STALE_TEXT =
+  'code-rag: the embedding model changed since this index was built, so its vectors are ' +
+  'being rebuilt from scratch. Semantic search is paused until the rebuild finishes ' +
+  '(the first call after a model switch); fall back to grep/read and retry shortly.';
+const isStale = (err) => err?.code === 'INDEX_STALE';
 
 async function callTool(name, args) {
   if (name === 'search_code') {
@@ -138,7 +163,11 @@ async function callTool(name, args) {
     try {
       results = await searchQuery(query, k, scope);
     } catch (err) {
-      if (isOllamaDown(err)) return { isError: true, content: [{ type: 'text', text: OLLAMA_DOWN_TEXT }] };
+      if (isEmbedDown(err)) return { isError: true, content: [{ type: 'text', text: embedDownText(err) }] };
+      if (isStale(err)) {
+        ensureIndex({ full: true }); // rebuild the stale index in the background
+        return { isError: true, content: [{ type: 'text', text: STALE_TEXT }] };
+      }
       throw err;
     }
     const note = cold
@@ -165,7 +194,8 @@ async function callTool(name, args) {
     if (st.chunks === 0) ensureIndex(); // warm a fresh project on first check
     const text =
       `files=${st.files} chunks=${st.chunks} last_indexed=${when}\n` +
-      `backend=ollama (${OLLAMA_MODEL}) roots=[${INDEX_ROOTS.join(', ')}]\n` +
+      `backend=${EMBED_BACKEND} (${EMBED_MODEL}) roots=[${INDEX_ROOTS.join(', ')}]\n` +
+      `model=${st.model ?? 'unknown'}${st.mismatch ? ' (MISMATCH — rebuild needed)' : ''}\n` +
       `building=${isBuilding() ? 'yes' : 'no'}\ndb=${DB_PATH}`;
     return { content: [{ type: 'text', text }] };
   }
@@ -176,12 +206,13 @@ async function callTool(name, args) {
     try {
       report = await build({ full: !!args.full, onProgress: () => {} });
     } catch (err) {
-      if (isOllamaDown(err)) return { isError: true, content: [{ type: 'text', text: OLLAMA_DOWN_TEXT }] };
+      if (isEmbedDown(err)) return { isError: true, content: [{ type: 'text', text: embedDownText(err) }] };
       throw err;
     }
     const text =
       `indexed=${report.indexed} skipped=${report.skipped} removed=${report.removed} ` +
-      `chunks=${report.chunks} files=${report.totalFiles}`;
+      `chunks=${report.chunks} files=${report.totalFiles}` +
+      (report.modelChanged ? '\nmodel changed — rebuilt from scratch' : '');
     return { content: [{ type: 'text', text }] };
   }
 

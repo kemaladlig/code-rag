@@ -73,15 +73,31 @@ export const EXCLUDE_DIRS = new Set([
   'ios',
 ]);
 
-// Embeddings: EmbeddingGemma v1 (300M) served by Ollama. Chosen over
-// EmbeddingGemma 2 / ONNX because only Ollama's GGML engine reaches the GPU on
-// this machine (~10x faster indexing at equal top-5 recall). See README.
+// Embedding backend. "ollama" talks to Ollama's /api/embed; "openai" talks to
+// any OpenAI-compatible /v1/embeddings endpoint — e.g. a standalone llama.cpp
+// llama-server, which is the only GPU route to EmbeddingGemma 2 on Windows.
+export const EMBED_BACKEND = process.env.CODE_RAG_EMBED_BACKEND || 'ollama';
+
+// EmbeddingGemma v1 (300M) served by Ollama is the default: Ollama's GGML
+// engine reaches the GPU (~10x faster indexing than the ONNX/CPU path). See
+// README for why v2 is not the default on this machine yet.
 export const OLLAMA_URL = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
-export const OLLAMA_MODEL = process.env.CODE_RAG_OLLAMA_MODEL || 'embeddinggemma';
+
+// Full endpoint URL for the "openai" backend (llama-server default shown).
+export const OPENAI_URL =
+  process.env.CODE_RAG_OPENAI_URL || 'http://127.0.0.1:8080/v1/embeddings';
+
+// Backend-agnostic model name. CODE_RAG_MODEL wins; the older, Ollama-specific
+// CODE_RAG_OLLAMA_MODEL still works; default is the EmbeddingGemma tag.
+export const EMBED_MODEL =
+  process.env.CODE_RAG_MODEL || process.env.CODE_RAG_OLLAMA_MODEL || 'embeddinggemma';
 
 // Asymmetric task prefix (model card): queries carry the task prefix, documents
-// the title/text form.
-export const QUERY_PREFIX = 'task: search result | query: ';
+// the title/text form. The card offers a code-specific prompt ("task: code
+// retrieval") beside the generic document-search one; override to A/B them
+// without reindexing, since only queries are affected.
+export const QUERY_PREFIX =
+  process.env.CODE_RAG_QUERY_PREFIX || 'task: search result | query: ';
 // Long sequences dominate embedding cost; cap the code part (0 = no cap).
 export const MAX_DOC_CHARS = Number(process.env.CODE_RAG_MAX_DOC_CHARS ?? 1600);
 

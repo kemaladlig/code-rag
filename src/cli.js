@@ -1,5 +1,7 @@
-// CLI: index / search / status. Run from tools/code-rag: node src/cli.js ...
-import { CODE_ROOTS, DB_PATH, INDEX_ROOTS, OLLAMA_MODEL } from './config.js';
+#!/usr/bin/env node
+// CLI: index / search / status. Run as `code-rag ...` (npm bin) or
+// `node src/cli.js ...` from a checkout.
+import { CODE_ROOTS, DB_PATH, EMBED_BACKEND, EMBED_MODEL, INDEX_ROOTS } from './config.js';
 import { build, searchQuery, status } from './indexer.js';
 
 function parse(argv) {
@@ -22,7 +24,7 @@ async function main() {
 
   if (cmd === 'index') {
     const t0 = Date.now();
-    console.log(`Indexing [${INDEX_ROOTS.join(', ')}] with ${OLLAMA_MODEL} (ollama) ...`);
+    console.log(`Indexing [${INDEX_ROOTS.join(', ')}] with ${EMBED_MODEL} (${EMBED_BACKEND}) ...`);
     const report = await build({
       full: !!flags['--full'],
       onProgress: flags['-q'] || flags['--quiet'] ? () => {} : (m) => console.log(m),
@@ -30,7 +32,8 @@ async function main() {
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     console.log(
       `Done in ${secs}s | indexed=${report.indexed} skipped=${report.skipped} ` +
-        `removed=${report.removed} chunks=${report.chunks} files=${report.totalFiles}`
+        `removed=${report.removed} chunks=${report.chunks} files=${report.totalFiles}` +
+        (report.modelChanged ? ' | model changed: full rebuild' : '')
     );
     return;
   }
@@ -47,8 +50,21 @@ async function main() {
     try {
       results = await searchQuery(query, flags.k || 8, scope);
     } catch (err) {
-      if (err?.code === 'OLLAMA_UNAVAILABLE') {
-        console.error('Ollama unreachable — start it (`ollama serve` or the desktop app) and retry.');
+      if (err?.code === 'EMBED_UNREACHABLE') {
+        console.error(
+          `Embedding backend "${EMBED_BACKEND}" unreachable — start it and retry ` +
+            '(Ollama: `ollama serve`; llama-server: run it on its /v1/embeddings port).'
+        );
+        process.exitCode = 1;
+        return;
+      }
+      if (err?.code === 'EMBED_HTTP') {
+        console.error(`Embedding failed — ${err.message}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (err?.code === 'INDEX_STALE') {
+        console.error(`${err.message}\nRun \`node src/cli.js index --full\` to rebuild for the current model.`);
         process.exitCode = 1;
         return;
       }
@@ -71,6 +87,10 @@ async function main() {
     const st = status();
     const when = st.lastIndexed ? new Date(st.lastIndexed * 1000).toLocaleString() : '-';
     console.log(`files=${st.files} chunks=${st.chunks} last_indexed=${when}`);
+    console.log(
+      `backend=${EMBED_BACKEND} (${EMBED_MODEL})  index_model=${st.model ?? 'unknown'}` +
+        (st.mismatch ? ' (MISMATCH — reindex needed)' : '')
+    );
     console.log(`db=${DB_PATH}`);
     return;
   }

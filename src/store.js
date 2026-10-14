@@ -35,7 +35,27 @@ export function open(file = DB_PATH) {
     text TEXT NOT NULL
   )`);
   db.exec('CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(relpath)');
+  // Index provenance. Vectors only mean something inside the embedding space
+  // that produced them, so we record which model built the index. Switching
+  // models (EmbeddingGemma v1 <-> v2) then forces a rebuild instead of silently
+  // comparing vectors from two different spaces — both are 768d, so a dimension
+  // check alone would not catch it.
+  db.exec(`CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`);
   return db;
+}
+
+export function getMeta(db, key) {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key);
+  return row ? row.value : null;
+}
+
+export function setMeta(db, key, value) {
+  db.prepare(
+    'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  ).run(key, String(value));
 }
 
 function pack(vec) {
