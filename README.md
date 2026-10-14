@@ -95,7 +95,9 @@ Three things, all cross-platform (Linux / macOS / Windows):
    ```bash
    ollama pull embeddinggemma
    ```
-2. **Node 22.5+** (the tool uses the built-in `node:sqlite`).
+2. **Node 22.5+** — the tool uses the built-in `node:sqlite`. Node 23.4+ (and
+   24) needs nothing extra; on Node 22–23.3 run with `--experimental-sqlite`
+   (e.g. `NODE_OPTIONS=--experimental-sqlite`).
 3. **This tool** — run it without installing, or install it globally:
    ```bash
    npx -y semantic-code-rag status     # no install
@@ -213,6 +215,7 @@ code-rag search "round timer reset" -k 5
 code-rag search "network envelope" --path src/core
 code-rag search "settings" --scope code   # code|docs|all
 code-rag status
+code-rag doctor   # check node, backend reachability, index freshness
 ```
 
 ### Environment
@@ -284,6 +287,18 @@ Scope, model and geometry live in `src/config.js`.
   the next call, and search resumes once it finishes.
 - **First search in a new repo returns few/no results** — the index is building
   in the background; fall back to grep/read and retry shortly.
+
+## Development
+
+Zero runtime dependencies, so there is nothing to install:
+
+```bash
+node --test                                  # unit tests (chunker, store, embedder, provenance)
+node evals/run.mjs evals/cases.example.json  # retrieval eval (needs a backend + index)
+```
+
+CI runs the tests on Linux, macOS and Windows across Node 22 and 24
+(`.github/workflows/ci.yml`).
 
 ## License
 

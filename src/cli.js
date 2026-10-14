@@ -1,8 +1,20 @@
 #!/usr/bin/env node
-// CLI: index / search / status. Run as `code-rag ...` (npm bin) or
+// CLI: index / search / status / doctor. Run as `code-rag ...` (npm bin) or
 // `node src/cli.js ...` from a checkout.
-import { CODE_ROOTS, DB_PATH, EMBED_BACKEND, EMBED_MODEL, INDEX_ROOTS } from './config.js';
+import {
+  CODE_ROOTS,
+  DB_PATH,
+  EMBED_BACKEND,
+  EMBED_MODEL,
+  INDEX_ROOTS,
+  OLLAMA_URL,
+  OPENAI_URL,
+  QUERY_TEXT,
+  REPO_ROOT,
+  looksLikeProject,
+} from './config.js';
 import { build, searchQuery, status } from './indexer.js';
+import { embedTexts } from './embedder.js';
 
 function parse(argv) {
   const [cmd, ...rest] = argv;
@@ -95,7 +107,45 @@ async function main() {
     return;
   }
 
-  console.log('usage: node src/cli.js <index|search|status>');
+  if (cmd === 'doctor') {
+    const [maj, min] = process.versions.node.split('.').map(Number);
+    const checks = [];
+    const check = (ok, msg) => checks.push([ok, msg]);
+
+    check(maj > 22 || (maj === 22 && min >= 5), `node ${process.versions.node} (need >= 22.5 for node:sqlite)`);
+    if (maj < 24 && (maj < 23 || (maj === 23 && min < 4))) {
+      check(false, 'node:sqlite needs --experimental-sqlite on Node < 23.4 (or use Node 24+)');
+    }
+
+    const endpoint = EMBED_BACKEND === 'openai' ? OPENAI_URL : `${OLLAMA_URL}/api/embed`;
+    check(true, `embedding backend: ${EMBED_BACKEND} (${EMBED_MODEL}) -> ${endpoint}`);
+
+    const t0 = Date.now();
+    try {
+      const [v] = await embedTexts([QUERY_TEXT('ping')]);
+      check(v?.length > 0, `embedding endpoint ok (${v.length}-dim, ${Date.now() - t0} ms)`);
+    } catch (err) {
+      check(false, `embedding endpoint: ${err.message}`);
+    }
+
+    const st = status();
+    const project = looksLikeProject();
+    check(
+      project || st.chunks > 0,
+      `repo: ${REPO_ROOT}${project ? '' : ' (no .git/src/docs — will not auto-index)'}`
+    );
+    check(
+      st.chunks > 0,
+      `index: ${st.files} files, ${st.chunks} chunks` +
+        (st.mismatch ? ` — STALE: built with ${st.model ?? '?'}, run \`index --full\`` : '')
+    );
+
+    for (const [ok, msg] of checks) console.log(`${ok ? 'ok  ' : 'FAIL'} ${msg}`);
+    process.exitCode = checks.some(([ok]) => !ok) ? 1 : 0;
+    return;
+  }
+
+  console.log('usage: code-rag <index|search|status|doctor>');
   process.exitCode = 1;
 }
 
