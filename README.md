@@ -318,6 +318,27 @@ node evals/run.mjs evals/cases.example.json  # retrieval eval (needs a backend +
 CI runs the tests on Linux, macOS and Windows across Node 22 and 24
 (`.github/workflows/ci.yml`).
 
+## Notes & lessons
+
+This is a small personal tool, not a product. It exists to give an MCP agent a
+local, private, zero-dependency way to find code by meaning. It is worth being
+honest about what it is *not*:
+
+- **Not a clear win over `grep`.** Semantic search only earns its keep for
+  conceptual queries ("where is the rate limiter") where the identifier is
+  unknown; for a known name `ripgrep` is exact and free.
+- **Not a token-saving silver bullet.** The search call and its snippets only pay
+  off when they replace reading several files; a miss is pure overhead.
+
+What the project did leave behind, arguably worth more than the tool:
+
+- **A measured, honest benchmark** (above), including the negative result that
+  EmbeddingGemma 2 did *not* beat v1 — which a 16-question run had falsely
+  suggested. Small evals lie; test on a real set.
+- **Reusable patterns:** an MCP server with no dependencies; index provenance
+  that refuses to compare vectors from different models; non-blocking background
+  indexing; cross-platform CI with no install step.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
