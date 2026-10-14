@@ -1,9 +1,14 @@
 # Code RAG (local semantic code search)
 
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node: >=22.5](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen.svg)](https://nodejs.org)
+[![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
+
 Local semantic search over a repository, exposed to any MCP client (OpenCode,
 VS Code, Cursor, Windsurf, Claude Code, Codex, Gemini CLI/Antigravity) through a
 small MCP server so an agent can locate code by meaning before reading files.
-Runs entirely in Node with no npm dependencies; embeddings come from Ollama.
+Runs entirely in Node with no npm dependencies; embeddings come from Ollama or
+any OpenAI-compatible endpoint (e.g. a llama.cpp `llama-server`).
 
 The same tool install serves **every project**: it derives the repo root from
 MCP roots / the working directory, keeps one self-ignored index per repo, and is
@@ -11,57 +16,155 @@ registered globally so no per-project wiring is needed.
 
 ## Stack
 
-- **Embeddings:** EmbeddingGemma **v1** (300M) via Ollama (GGML/GPU). No npm deps.
+- **Embeddings:** EmbeddingGemma via a pluggable backend (`CODE_RAG_EMBED_BACKEND`):
+  **ollama** (default, GGML/GPU) or any OpenAI-compatible **openai**
+  `/v1/embeddings` — e.g. a standalone llama.cpp `llama-server`, which is how
+  EmbeddingGemma **2** runs on GPU. No npm deps.
 - **Store:** Node's built-in `node:sqlite`; float32 blobs; brute-force cosine.
   Pilot-sized only — swap for `sqlite-vec` if an index grows large.
 - **Chunking:** top-level declarations (JS/TS), headings (md), overlapping
   windows (other). Metadata = relpath + symbol + line range.
 
-### Why v1 via Ollama, not EmbeddingGemma 2
+### Embedding model & backend (why the default is v1 via Ollama)
 
-EmbeddingGemma 2 runs only through ONNX/Transformers.js, and on this machine
-DirectML did **not** accelerate it — so it indexed on CPU at ~0.7 chunks/s
-(~20 min). Ollama's GGML engine reaches the GPU (~5 min for a whole `src/`) and,
-once docs are excluded from ranking, v1 matches v2's top-1 at equal top-5
-recall. v2 bought nothing for ~10× the cost, so the ONNX path was removed.
+The **default** is v1 (`embeddinggemma`) through Ollama: it needs nothing beyond
+Ollama itself, so the tool works out of the box across every client. EmbeddingGemma
+**2** is *better and faster here* (see the measured table below) but has no
+Ollama route on Windows yet — re-checked Oct 2026:
+
+- **ONNX/Transformers.js:** at v2's launch the only route; DirectML did **not**
+  accelerate it, so it indexed on CPU at ~0.7 chunks/s (~20 min). Removed.
+- **Ollama, official `embeddinggemma-2`:** refuses on Windows — *"this model
+  requires MLX support, but the MLX runtime is not available"*. MLX is
+  Apple-Silicon only.
+- **Ollama, community GGUF** (`johnwaynelucas/embeddinggemma-2:gguf`): the
+  bundled llama.cpp rejects it — *unknown model architecture: `gemma-embedding2`*
+  (Ollama 0.40.3).
+- **Standalone llama.cpp `llama-server`:** ✅ works on GPU. Architecture support
+  ggml-org/llama.cpp#30054; serves OpenAI-compatible `/v1/embeddings`. Recipe in
+  "EmbeddingGemma 2 via llama-server" below.
+
+v2 also ships a `task: code retrieval` query prefix; measured here it scored
+*worse* on code-only ranking than the generic `task: search result`, so the
+default is unchanged (`CODE_RAG_QUERY_PREFIX` retries it).
+
+Vectors from different models are **not** comparable (both v1 and v2 are 768d, so
+a dimension check alone would not catch a swap). The index records its provenance
+(`meta` table: model **and** backend — runtimes/quantizations shift the vectors
+too): switching either forces a full rebuild, and a query against a stale index
+fails with a clear "reindex required" message instead of returning meaningless
+scores.
 
 ## Chosen configuration (measured)
 
-40-line chunks, code-first search, on the 16-question set (`eval.mjs` /
-`eval-code.mjs`):
+40-line chunks, code-first search, on a ~70k-LOC repo with a 16-question set,
+Oct 2026:
 
-| Config                 | Index   | recall@1 | recall@5 | MRR   |
-| ---------------------- | ------- | -------- | -------- | ----- |
-| **v1 + 40, code-only** | ~112 s  | 75%      | 94%      | 0.828 |
-| v2 + 90, code-only     | ~20 min | 75%      | 94%      | 0.799 |
-| v1 + 40, with docs     | ~112 s  | 56%      | 94%      | 0.721 |
+| Embedding (code-only)      | Index  | recall@1 | recall@5 | MRR   | doc hijacks |
+| -------------------------- | ------ | -------- | -------- | ----- | ----------- |
+| v1 + Ollama, `search result` | 438 s | 69%    | 88%      | 0.755 | 3/16        |
+| **v2 + llama-server, `search result`** | **340 s** | **75%** | **94%** | **0.818** | **0/16** |
+| v2 + llama-server, `code retrieval` | 340 s | 63% | 88% | 0.716 | 0/16 |
 
-Docs are still indexed; `search_code` just defaults to code scope because design
-docs otherwise outrank code semantically.
+All-scope (docs included): v1 50/88/0.651 vs **v2 75/94/0.818**. v2 is
+both faster to index and sharper. It also stops docs from outranking code
+(hijacks 3 → 0), so the code-scope default matters less under v2 — but it stays,
+because code search is the point. Switch to v2 with the recipe below.
 
 _This table is a pilot snapshot: the eval set and the working tree both move, so
-absolute recall drifts. Rerun `eval.mjs` / `eval-code.mjs` for current numbers._
+absolute recall drifts. Reproduce it with the bundled runner (below)._
 
-## Setup
+### Evaluating retrieval
 
-Install [Ollama](https://ollama.com), then:
+`evals/run.mjs` scores the index against a case file (`query` → expected file
+path) and reports recall@1, recall@5, MRR and doc-hijack rate:
 
 ```bash
-ollama pull embeddinggemma
+node evals/run.mjs evals/cases.json          # rank across the whole index
+node evals/run.mjs evals/cases.json --code   # rank within code scope only
 ```
 
-No `npm install` needed. The Ollama server (desktop app or `ollama serve`) must
-be running for indexing and search. Requires Node 22+ (`node:sqlite`).
+Copy `evals/cases.example.json` and replace the queries with your own; there is no
+repo-specific data baked in.
 
-If Ollama is unreachable, `search_code` / `reindex` return a clear "Ollama is not
-reachable" note (marked as an error) instead of a raw failure; fall back to
-grep/read until it is back — the existing index stays valid.
+## Install
 
-### Global install (all projects)
+Three things, all cross-platform (Linux / macOS / Windows):
 
-The tool lives outside any project at
-`~/.config/opencode/tools/code-rag` (its own git repo) and is registered once
-per tool. Global OpenCode config, `~/.config/opencode/opencode.jsonc`:
+1. **[Ollama](https://ollama.com)** for embeddings + GPU, then pull the model:
+   ```bash
+   ollama pull embeddinggemma
+   ```
+2. **Node 22.5+** (the tool uses the built-in `node:sqlite`).
+3. **This tool** — run it without installing, or install it globally:
+   ```bash
+   npx -y semantic-code-rag status     # no install
+   npm i -g semantic-code-rag          # or install once
+   ```
+
+No other dependencies. Node prints an `ExperimentalWarning` for `node:sqlite` on
+some versions; it is harmless.
+
+If the backend is unreachable, `search_code` / `reindex` return a clear note
+(marked as an error) instead of a raw failure; fall back to grep/read until it is
+back — the existing index stays valid. A server that answers but can't load the
+model (e.g. wrong architecture) surfaces its own message.
+
+### EmbeddingGemma 2 via llama-server (v2, GPU, Windows)
+
+v2 needs a standalone llama.cpp build (Ollama can't serve it on Windows — see
+above). Build or download `llama-server` with [EmbeddingGemma 2
+support](https://github.com/ggml-org/llama.cpp/pull/30054), grab a GGUF such as
+[`unsloth/embeddinggemma-2-GGUF`](https://huggingface.co/unsloth/embeddinggemma-2-GGUF)
+(text UD-Q4_K_XL ≈ 170 MB), then serve it (GPU offload via `-ngl 99`):
+
+```bash
+llama-server \
+  --model embeddinggemma-2-UD-Q4_K_XL.gguf --alias embeddinggemma2 \
+  --embeddings --pooling mean \
+  --ctx-size 8192 --batch-size 8192 --ubatch-size 8192 \
+  --host 127.0.0.1 --port 8081 -ngl 99
+```
+
+Point the tool at it and rebuild (the guard detects the model/backend change and
+rebuilds from scratch automatically):
+
+```bash
+export CODE_RAG_EMBED_BACKEND=openai
+export CODE_RAG_OPENAI_URL=http://127.0.0.1:8081/v1/embeddings
+export CODE_RAG_MODEL=embeddinggemma2
+code-rag index --full
+```
+
+The MCP server needs the same three variables — set them in its client config
+`env` block (see "MCP clients" below), not just your shell.
+
+Text stays on GPU and the model context is 8192, so `ctx`/`batch`/`ubatch` must be
+raised together (the default 2048 is too small for a batch of 40-line chunks).
+Do **not** serve an FP16 quant: EmbeddingGemma 2 can return NaN in FP16 (the
+embedder rejects non-finite vectors loudly if it happens).
+
+### MCP clients
+
+Register the server once per client. Most clients (VS Code, Cursor, Windsurf,
+Claude Code/Desktop, Codex, Gemini CLI/Antigravity) take a command + args — no
+global install needed:
+
+```jsonc
+{
+  "mcpServers": {
+    "code-rag": {
+      "command": "npx",
+      "args": ["-y", "-p", "semantic-code-rag", "code-rag-mcp"]
+    }
+  }
+}
+```
+
+If you ran `npm i -g semantic-code-rag`, use the bin directly instead:
+`"command": "code-rag-mcp"`.
+
+OpenCode (`~/.config/opencode/opencode.jsonc`) uses a slightly different shape:
 
 ```jsonc
 {
@@ -69,22 +172,21 @@ per tool. Global OpenCode config, `~/.config/opencode/opencode.jsonc`:
     "servers": {
       "code-rag": {
         "type": "local",
-        "command": ["node", "C:/Users/kemal/.config/opencode/tools/code-rag/src/mcp.js"]
+        "command": ["npx", "-y", "-p", "semantic-code-rag", "code-rag-mcp"]
       }
     }
   }
 }
 ```
 
-The other clients (VS Code, Cursor, Windsurf, Claude Code, Codex, Gemini CLI,
-Antigravity) point at the same absolute `src/mcp.js` from their own global MCP
-config. There is one physical copy, so a fix lands in every tool at once.
+Add an `"env"` map to either snippet to run the server against a non-default
+backend (e.g. `CODE_RAG_EMBED_BACKEND`, `CODE_RAG_OPENAI_URL`, `CODE_RAG_MODEL`).
 
-OpenCode launches a local MCP server with the workspace as its `cwd`, so the
-server indexes whichever project the session is in. Not every client does this,
-so the server also asks for the workspace via MCP **roots/list** (when the
-client advertises the `roots` capability) and rebinds if `cwd` was wrong. A new
-project is indexed in the background on first use — see "First use" below.
+The server indexes whichever project the session is in. OpenCode launches it with
+the workspace as `cwd`; other clients may not, so it also asks for the workspace
+via MCP **roots/list** (when the client advertises the `roots` capability) and
+rebinds if `cwd` was wrong. A new project is indexed in the background on first
+use — see "First use" below.
 
 ## Repo root & index scope
 
@@ -101,16 +203,16 @@ project is indexed in the background on first use — see "First use" below.
 ## Usage (CLI)
 
 Run from the repo root you want to index (the repo root is the working
-directory), invoking the tool from its global home:
+directory; `CODE_RAG_REPO` overrides it). Assumes the global `code-rag` bin — or
+prefix any line with `npx -y -p semantic-code-rag code-rag`:
 
 ```bash
-CODE_RAG=~/.config/opencode/tools/code-rag
-node "$CODE_RAG/src/cli.js" index         # build/refresh (incremental)
-node "$CODE_RAG/src/cli.js" index --full  # force rebuild
-node "$CODE_RAG/src/cli.js" search "round timer reset" -k 5
-node "$CODE_RAG/src/cli.js" search "network envelope" --path src/core
-node "$CODE_RAG/src/cli.js" search "settings" --scope code   # code|docs|all
-node "$CODE_RAG/src/cli.js" status
+code-rag index          # build/refresh (incremental)
+code-rag index --full   # force rebuild
+code-rag search "round timer reset" -k 5
+code-rag search "network envelope" --path src/core
+code-rag search "settings" --scope code   # code|docs|all
+code-rag status
 ```
 
 ### Environment
@@ -121,12 +223,16 @@ node "$CODE_RAG/src/cli.js" status
 | `CODE_RAG_ROOTS`        | `src` (+`docs`) if `src/` exists, else `.` | Comma-separated index scope |
 | `CODE_RAG_CODE_ROOTS`   | index roots minus `docs`; empty = all-but-docs | Comma-separated roots for `scope=code` |
 | `CODE_RAG_DB`           | `<repo>/.code-rag/index.db` | Index path (relative to repo root)      |
-| `CODE_RAG_OLLAMA_MODEL` | `embeddinggemma`     | Ollama model name                              |
+| `CODE_RAG_EMBED_BACKEND` | `ollama`            | `ollama` (`/api/embed`) or `openai` (`/v1/embeddings`) |
+| `CODE_RAG_MODEL`        | `embeddinggemma`     | Embedding model name (backend-agnostic)         |
+| `CODE_RAG_OPENAI_URL`   | `http://127.0.0.1:8080/v1/embeddings` | Endpoint for the `openai` backend |
+| `CODE_RAG_OLLAMA_MODEL` | —                    | Deprecated alias for `CODE_RAG_MODEL`           |
+| `CODE_RAG_QUERY_PREFIX` | `task: search result \| query: ` | Query task prefix (retry e.g. `task: code retrieval \| query: `) |
 | `OLLAMA_URL`            | `http://127.0.0.1:11434` | Ollama endpoint                            |
 
 ## Usage (MCP / OpenCode)
 
-`node src/mcp.js` speaks MCP over stdio and exposes three tools:
+`code-rag-mcp` speaks MCP over stdio and exposes three tools:
 
 - `search_code(query, k?, scope?, path?)` — ranked chunks with file path + line
   range. `scope` defaults to `code` (the project's source roots); use `docs` or
@@ -143,7 +249,7 @@ When a project has no index yet — or the working tree moved on — `search_cod
 and `index_status` start an incremental build **in the background** and return
 immediately with whatever is already indexed. The first call in a new project
 may therefore return few results: fall back to normal search/read and retry
-shortly. The index is ready seconds to minutes later (Ollama/GPU bound); later
+shortly. The index is ready seconds to minutes later (embedding/GPU bound); later
 calls refresh incrementally and are cheap. `reindex` is the only synchronous
 entry point, for when you must wait for the index to be current. Only
 directories that look like a project (`.git`, `src/`, or `docs/`) are
@@ -152,6 +258,11 @@ auto-indexed, so a stray working directory is never crawled.
 ## Design
 
 - **Vectors:** 768-dim, L2-normalized.
+- **Index provenance:** the `meta` table stores the embedding model **and**
+  backend; a swap of either forces a full rebuild and a stale-index query fails
+  loudly (see above).
+  Non-finite embeddings (the float16 NaN trap in EmbeddingGemma 2's card) are
+  rejected rather than stored.
 - **Task prefix:** asymmetric per model card — queries get
   `task: search result | query: {q}`, documents `title: {file} | text: {code}`.
 - **Long sequences dominate cost**, hence 40-line chunks and a doc-size cap
@@ -160,3 +271,20 @@ auto-indexed, so a stray working directory is never crawled.
   `*` `.gitignore` written inside the directory.
 
 Scope, model and geometry live in `src/config.js`.
+
+## Troubleshooting
+
+- **`ExperimentalWarning: SQLite …`** — `node:sqlite` is still marked
+  experimental; the warning is harmless.
+- **"embedding backend … unreachable"** — start Ollama (`ollama serve` or the
+  desktop app), or your `llama-server` for the `openai` backend. The existing
+  index stays valid while it is down.
+- **"index was built with … reindex required"** — the model or backend changed;
+  run `code-rag index --full`. The background build does this automatically on
+  the next call, and search resumes once it finishes.
+- **First search in a new repo returns few/no results** — the index is building
+  in the background; fall back to grep/read and retry shortly.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

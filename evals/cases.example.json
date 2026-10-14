@@ -1,0 +1,9 @@
+{
+  "note": "Template. Copy to any path (e.g. evals/cases.json) and replace with questions for YOUR repo. 'expect' is a repo-relative file path; 'query' is what a developer would type when searching. Run: node evals/run.mjs evals/cases.json --code",
+  "cases": [
+    { "query": "where is the request rate limiter implemented", "expect": "src/middleware/rateLimit.js" },
+    { "query": "how are database connections pooled", "expect": "src/db/pool.js" },
+    { "query": "websocket reconnect with exponential backoff", "expect": "src/net/reconnect.js" },
+    { "query": "config loading and environment overrides", "expect": "src/config.js" }
+  ]
+}

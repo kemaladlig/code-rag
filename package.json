@@ -1,14 +1,42 @@
 {
-  "name": "code-rag",
-  "private": true,
+  "name": "semantic-code-rag",
+  "version": "0.1.0",
+  "description": "Local semantic code search over MCP. Zero dependencies; embeddings from EmbeddingGemma via Ollama (or any OpenAI-compatible endpoint).",
   "type": "module",
-  "description": "Local semantic code search (EmbeddingGemma v1 via Ollama)",
+  "license": "MIT",
+  "bin": {
+    "code-rag": "src/cli.js",
+    "code-rag-mcp": "src/mcp.js"
+  },
+  "files": [
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kemaladlig/code-rag.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "semantic-search",
+    "code-search",
+    "rag",
+    "embeddings",
+    "embeddinggemma",
+    "ollama",
+    "sqlite"
+  ],
   "scripts": {
     "index": "node src/cli.js index",
     "search": "node src/cli.js search",
     "status": "node src/cli.js status",
     "mcp": "node src/mcp.js",
-    "eval": "node eval.mjs",
-    "eval:code": "node eval-code.mjs"
+    "eval": "node evals/run.mjs",
+    "eval:code": "node evals/run.mjs --code"
   }
 }

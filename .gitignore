@@ -1,5 +1,7 @@
 node_modules/
 .cache/
+.code-rag/
+evals/cases.local.json
 index*.db
 index*.db-shm
 index*.db-wal
