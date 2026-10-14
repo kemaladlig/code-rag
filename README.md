@@ -1,5 +1,6 @@
 # Code RAG (local semantic code search)
 
+[![CI](https://github.com/kemaladlig/code-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/kemaladlig/code-rag/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![node: >=22.5](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen.svg)](https://nodejs.org)
 [![dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](package.json)
@@ -29,8 +30,11 @@ registered globally so no per-project wiring is needed.
 
 The **default** is v1 (`embeddinggemma`) through Ollama: it needs nothing beyond
 Ollama itself, so the tool works out of the box across every client. EmbeddingGemma
-**2** is *better and faster here* (see the measured table below) but has no
-Ollama route on Windows yet — re-checked Oct 2026:
+**2** is **faster to index here and never lets docs outrank code**, but on a larger
+eval it did **not** beat v1 on top-1 recall — the 16-question set that once
+suggested otherwise was too small (see the measured table below). So v1 stays the
+default and v2 is opt-in. v2 has no Ollama route on Windows yet — re-checked
+Oct 2026:
 
 - **ONNX/Transformers.js:** at v2's launch the only route; DirectML did **not**
   accelerate it, so it indexed on CPU at ~0.7 chunks/s (~20 min). Removed.
@@ -50,28 +54,37 @@ default is unchanged (`CODE_RAG_QUERY_PREFIX` retries it).
 
 Vectors from different models are **not** comparable (both v1 and v2 are 768d, so
 a dimension check alone would not catch a swap). The index records its provenance
-(`meta` table: model **and** backend — runtimes/quantizations shift the vectors
-too): switching either forces a full rebuild, and a query against a stale index
-fails with a clear "reindex required" message instead of returning meaningless
-scores.
+(`meta` table: model **and** backend): switching either forces a full rebuild, and
+a query against a stale index fails with a clear "reindex required" message
+instead of returning meaningless scores. The guard keys on the model name and
+backend only — it cannot see the quantization, so swapping a GGUF for a different
+quant under the same `--alias` needs an explicit `code-rag index --full`.
 
 ## Chosen configuration (measured)
 
-40-line chunks, code-first search, on a ~70k-LOC repo with a 16-question set,
+40-line chunks, `scope=code`, on two of the author's repos — a ~70k-LOC game app
+(`src/` layout) and a smaller `apps/`+`packages/` monorepo — against 75
+hand-written `query → file` cases (40 + 35). One Windows machine (GTX 1650),
 Oct 2026:
 
-| Embedding (code-only)      | Index  | recall@1 | recall@5 | MRR   | doc hijacks |
-| -------------------------- | ------ | -------- | -------- | ----- | ----------- |
-| v1 + Ollama, `search result` | 438 s | 69%    | 88%      | 0.755 | 3/16        |
-| **v2 + llama-server, `search result`** | **340 s** | **75%** | **94%** | **0.818** | **0/16** |
-| v2 + llama-server, `code retrieval` | 340 s | 63% | 88% | 0.716 | 0/16 |
+| Embedding (code-only)  | brutal-party  | gods-of-rift  | index (bp / gor) |
+| ---------------------- | ------------- | ------------- | ---------------- |
+| v1 (Ollama)            | **55% / 70%** | **71% / 91%** | 442 s / 305 s    |
+| v2 Q4_K_XL (llama.cpp) | 45% / 60%     | 66% / 91%     | 328 s / 217 s    |
+| v2 Q8_0 (llama.cpp)    | 45% / 63%     | 69% / 91%     | 395 s / —        |
 
-All-scope (docs included): v1 50/88/0.651 vs **v2 75/94/0.818**. v2 is
-both faster to index and sharper. It also stops docs from outranking code
-(hijacks 3 → 0), so the code-scope default matters less under v2 — but it stays,
-because code search is the point. Switch to v2 with the recipe below.
+Cells are recall@1 / recall@5. MRR: brutal-party v1 **0.610** > Q8 0.514 ≈ Q4
+0.515; gods-of-rift Q8 **0.786** ≥ v1 0.773 > Q4 0.764. Doc-hijack (a design doc
+outranking code): v1 1 per repo, v2 **0**.
 
-_This table is a pilot snapshot: the eval set and the working tree both move, so
+Read it honestly: **v2 is not the better retriever here.** On the larger repo it
+is ~10 points behind v1 on top-1 and never catches up; on the monorepo it is
+within a case or two (and Q8 leads on MRR). An earlier 16-question run suggested
+the opposite — that was too small a set, and it was not a quantization artifact
+(Q8 ≈ Q4). What v2 *does* buy is speed (~25–35% faster to index) and a clean zero
+on doc-hijack, so it stays a supported opt-in, not the default.
+
+_This is a single-machine pilot: the case sets and the working trees both move, so
 absolute recall drifts. Reproduce it with the bundled runner (below)._
 
 ### Evaluating retrieval
@@ -145,6 +158,11 @@ Text stays on GPU and the model context is 8192, so `ctx`/`batch`/`ubatch` must 
 raised together (the default 2048 is too small for a batch of 40-line chunks).
 Do **not** serve an FP16 quant: EmbeddingGemma 2 can return NaN in FP16 (the
 embedder rejects non-finite vectors loudly if it happens).
+
+Pick the quant deliberately. In our eval Q8_0 and Q4_K_XL scored the same on
+retrieval, so on a small GPU Q4 costs nothing in quality. BF16 is the model
+card's recommendation, but on this machine (GTX 1650 / Vulkan) it was ~4× slower
+to index than Q4 — roughly 20 min vs 5.5 min for the same 3864 chunks.
 
 ### MCP clients
 
